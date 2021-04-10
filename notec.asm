@@ -17,9 +17,15 @@ default rel                     ; Ustawienie adresowania relatywnego.
 ; n:     rdi    numer danego notecia
 ; *calc: rsi    wskaźnik na napis ASCIIZ, opisujący obliczenie
 
+section .data
+table_lock      dq 0            ; Inicjalizujemy lock na "stół synchronizacyjny".
+first_lock      dq N            ; Inicjalizujemy lock na pierwsze krzesło.
+second_lock     dq N            ; Inicjalizujemy lock na drugie krzesło.
+
 section .bss
-
-
+wait_array    resq N            ; Globalna tablica do synchronizacji Noteci.
+first_chair   resq 1            ; Prezent dla pierwszego Notecia.
+second_chair  resq 1            ; Prezent dla drugiego Notecia.
 
 section .text
 
@@ -48,8 +54,9 @@ notec:
 
     push    r13
 
-
-; !!! Poprawić przechodzenie do trybu !!!
+    lea     r8, [rel wait_array]
+    lea     r9, [r8 + r14 * 8]
+    mov     qword [r9], N
 
 ; Wczytujemy kolejne znaki.
 calc_loop:
@@ -231,6 +238,67 @@ update_stack:
 
 ; TODO: synchronizacja Noteci.
 chr_W:
+    pop     rax                 ; Pobieramy numer instancji Notecia, z którym chcemy się zsynchronizować.
+    pop     rcx                 ; Pobieramy wartość, którą chcemy wymienić.
+
+    lea     r8, \
+    [rel wait_array]
+    lea     r9, [r8 + rax * 8]  ; Pobieramy adres komórki z tablicy odpowiadającą Noteciowi, z którym chcemy się zsynchronizować.
+    mov     rsi, [r9]
+    cmp     r14, rsi
+    je      second              ; Jesteśmy drudzy.
+
+first:
+    lea     r8, \
+    [rel wait_array]
+    lea     r9, [r8 + r14 *8]   ; Pobieramy adres komórki z tablicy odpowiadającej instancji danego Notecia.
+    mov     [r9], rax           ; Wrzucamy numer instancji Notecia, na którego czekamy.
+
+first_wait:
+    mov     rsi, [second_lock]
+    cmp     r14, rsi
+    jne     first_wait          ; Czekamy na drugie krzesło.
+
+first_action:
+    mov     rsi, [rel second_chair] ; Pobieramy wartość od drugiego Notecia.
+    push    rsi                 ; Wrzucamy na wierzchołek stosu otrzymaną wartość.
+
+    mov     r9, N               ; Nie chcemy się synchronizować.
+    mov     [second_lock], r9   ; Blokujemy krzesło.
+
+    mov     [rel first_chair], rcx  ; Przekazujemy naszą przesyłkę.
+    mov     [first_lock], rax   ; Zwalniamy drugiego Notecia, czekającego na przesyłkę.
+
+    jmp     calc_loop
+
+second:
+    mov     rdx, table_lock   ; Pobieramy adres semafora.
+    mov     r9, 1
+
+table_wait:
+    xchg    [rdx], r9           ; Zamykamy blokadę.
+    test    r9, r9              ; Sprawdzamy czy była otwarta.
+    jnz     table_wait          ; Kręcimy się, jeśli była zamknięta.
+
+table_action:
+    mov     [rel second_chair], rcx ; Przekazujemy naszą przesyłkę.
+    mov     [second_lock], rax  ; Zwalniamy pierwszego Notecia, czekającego na przesyłkę.
+
+second_wait:
+    mov     rsi, [first_lock]
+    cmp     r14, rsi
+    jne     second_wait         ; Czekamy na pierwsze krzesło.
+
+second_action:
+    mov     rsi, [rel first_chair]  ; Pobieramy wartość od pierwszego Notecia.
+    push    rsi                 ; Wrzucamy na wierzchołek stosu otrzymaną wartość.
+
+    mov     rsi, N
+    mov     [first_lock], rsi     ; Blokujemy krzesło.
+
+    mov     [rdx], r9           ; Otwieramy blokadę.
+
+    jmp     calc_loop
 
 update_mode:
     xor     r12D, r12D          ; Wychodzimy z trybu wpisywania.
