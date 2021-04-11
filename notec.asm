@@ -6,20 +6,14 @@ extern debug
 
 default rel                     ; Ustawienie adresowania relatywnego.
 
-; Bullet points:
-;   -> zgodność z wymaganiami ABI, tzn. rejestry i stos procesora
-;   -> sensowne rozwiązanie problemu synchronizacji noteci
 
-; TO DO:
-; Czy macro pozwala na zmniejszenie objętości kodu?
-
-; N:     macro  liczba wszystkich noteci
-; n:     rdi    numer danego notecia
-; *calc: rsi    wskaźnik na napis ASCIIZ, opisujący obliczenie
+; N:            predefiniowana liczba wszystkich noteci
+; n:     rdi    numer instancji danego notecia
+; *calc: rsi    wskaźnik na napis ASCIIZ, opisujący obliczenia
 
 section .data
 align           8
-table_lock      dq 0            ; Inicjalizujemy lock na "stół synchronizacyjny".
+global_lock     dq 0            ; Inicjalizujemy semafor do ochrony globalnej.
 first_lock      dq 0            ; Inicjalizujemy lock na pierwsze krzesło.
 second_lock     dq 0            ; Inicjalizujemy lock na drugie krzesło.
 
@@ -31,39 +25,32 @@ second_chair  resq 1            ; Prezent dla drugiego Notecia.
 
 section .text
 
-; Mamy dwa tryby, jak je reprezentować ??? Musimy je aktualizować na bieżąco?
-
-; Argumenty funkcji:
-;   -> rdi, rsi, rdx, rcx, r8, r9
-
-; Trzeba zachować:
-;   -> rbx, rsp, rbp, r12 - r15
-
-; Można zmieniać:
-;   -> rax, rcx, rdx, rsi, rdi, r8 - r11
-
+; Przygotowujemy odpowiednio rejestry, które będziemy wykorzystywać,
+; a których wartości są zachowywane pomiędzy callami funkcji.
+; Dbamy o zgodność z ABI.
 notec:
     push    rbp
     mov     rbp, rsp            ; Ustawiamy w rbp adres bazowy ramki.
 
     push    rbx
-    push    r14
     lea     rbx, [rsi]          ; W rbx trzymamy wskaźnik na napis.
+
+    push    r14
     mov     r14D, edi           ; Zapamiętujemy numer instancji danego notecia.
 
     push    r12
-    xor     r12D, r12D          ; W r12 trzymamy informację nt. trybu w jakim znajduje się Noteć (wpisywania albo nie).
+    xor     r12D, r12D          ; W r12 trzymamy informację nt. trybu
+                                ; w jakim znajduje się Noteć (wpisywania albo nie).
 
-    push    r13
-    push    r15                 ; Rejestr, w którym będziemy trzymać numer instancji+1 (na potrzeby synchronizacji).
+    push    r13                 ; Przyda się przed wywołaniem funkcji debug.
+
+    push    r15
     mov     r15, r14
-    inc     r15
+    inc     r15                 ; Zapamiętujemy numer+1 instancji danego Notecia
+                                ; (na potrzeby synchronizacji).
 
-    ; lea     r8, [rel wait_array]
-    ; lea     r9, [r8 + r14 * 8]
-    ; mov     qword [r9], N
 
-; Wczytujemy kolejne znaki.
+; Wczytujemy kolejne znaki, opisujące ciąg obliczeń danego Notecia.
 calc_loop:
     xor     rsi, rsi
     mov     sil, [rbx]          ; Pobieramy kolejny znak.
@@ -120,15 +107,15 @@ calc_loop:
 
     ; Skoro napis zawiera tylko wyspecyfikowane znaki,
     ; to w rsi mamy cyfrę (0-9)|(A-F)|(a-f).
-    sub     rsi, 48
-    cmp     rsi, 9
+    sub     sil, 48
+    cmp     sil, 9
     jna     choose_mode         ; Cyfra z zakresu (0-9).
 
-    sub     rsi, 7
-    cmp     rsi, 15
-    jna     choose_mode         ; Cyfra z zakresu (A-F)
+    sub     sil, 7
+    cmp     sil, 15
+    jna     choose_mode         ; Cyfra z zakresu (A-F).
 
-    sub     rsi, 32             ; Cyfra z zakresu (a-f).
+    sub     sil, 32             ; Cyfra z zakresu (a-f).
 
 choose_mode:
     test    r12D, r12D
@@ -136,198 +123,229 @@ choose_mode:
 
 standard_mode:
     push    rsi                 ; Wrzucamy nową wartość na wierzchołek stosu.
-    or      r12D, 0x1           ; Ustawiamy tryb wpisywania
+    or      r12D, 0x1           ; Ustawiamy tryb wpisywania.
     jmp     calc_loop
 
 enter_mode:
     pop     rax                 ; Pobieramy wartość z wierzchołka stosu.
     shl     rax, 4              ; Robimy miejsce na nową cyfrę.
-    add     rax, rsi            ; Dopisujemy nową cyfrę.
+    add     al, sil            ; Dopisujemy nową cyfrę.
     push    rax                 ; Wrzucamy nową wartość na wierzchołek stosu.
     jmp     calc_loop
 
 ; Operacje dla konkretnych znaków.
 chr_eq:
-    ; xor     r12D, r12D          ; Wychodzimy z trybu wpisywania.
     jmp     update_mode
 
+; Wrzucamy jako nowy wierzchołek sumę dwóch wartości zdjętych ze stosu.
 chr_add:
     pop     rax
     pop     rcx
     add     rax, rcx
-    push    rax                 ; Wrzucamy jako nowy wierzchołek sumę dwóch wartości zdjętych ze stosu.
-    jmp     update_mode
-
-chr_mul:
-    pop     rax
-    pop     rcx
-    mul     rcx                 ; Mnożymy zawartośc rax przez rcx (wartości mogą być ze znakiem).
-    push    rax                 ; Wrzucamy na wierzchołek stosu wyliczony wynik.
-    jmp     update_mode
-
-chr_ar_neg:
-    pop     rax
-    neg     rax                 ; Negujemy wartość z wierzchołka stosu.
     push    rax
     jmp     update_mode
 
+; Wrzucamy na wierzchołek stosu iloczyn dwóch wartości zdjętych ze stosu.
+chr_mul:
+    pop     rax
+    pop     rcx
+    mul     rcx                 ; Mnożymy rax przez rcx (ze znakiem).
+    push    rax
+    jmp     update_mode
+
+; Odwracamy znak wartości z wierzchołka stosu.
+chr_ar_neg:
+    pop     rax
+    neg     rax
+    push    rax
+    jmp     update_mode
+
+; Wrzucamy jako nową wartość wierzchołka stosu
+; wynik operacji AND na dwóch wartościach zdjętych ze stosu.
 chr_and:
     pop     rax
     pop     rcx
     and     rax, rcx
-    push    rax                 ; Wrzucamy jako nową wartość wierzchołka stosu wynik operacji AND na dwóch wartościach zdjętych ze stosu.
+    push    rax
     jmp     update_mode
 
+; Wrzucamy jako nową wartość wierzchołka stosu
+; wynik operacji OR na dwóch wartościach zdjętych ze stosu.
 chr_or:
     pop     rax
     pop     rcx
     or      rax, rcx
-    push    rax                 ; Wrzucamy jako nową wartość wierzchołka stosu wynik operacji OR na dwóch wartościach zdjętych ze stosu.
+    push    rax
     jmp     update_mode
 
+; Wrzucamy jako nową wartość wierzchołka stosu
+; wynik operacji OR na dwóch wartościach zdjętych ze stosu.
 chr_xor:
     pop     rax
     pop     rcx
     xor     rax, rcx
-    push    rax                 ; Wrzucamy jako nową wartość wierzchołka stosu wynik operacji OR na dwóch wartościach zdjętych ze stosu.
+    push    rax
     jmp     update_mode
 
+; Negujemy wartość z wierzchołka stosu.
 chr_log_neg:
     pop     rax
     not     rax
-    push    rax                 ; Wrzucamy na stos negację dotychczasowej wartości z wierzchołka stosu.
+    push    rax
     jmp     update_mode
 
+; Usuwamy wartość z wierzchołka stosu.
 chr_Z:
-    pop     rax                 ; Usuwamy wartość z wierzchołka stosu.
+    pop     rax
     jmp     update_mode
 
+; Duplikujemy wartość z wierzchołka stosu.
 chr_Y:
     pop     rax
     push    rax
-    push    rax                 ; Duplikujemy wartość z wierzchołka stosu.
+    push    rax
     jmp     update_mode
 
+; Zamieniamy kolejnością dwie wartości z wierzchu stosu.
 chr_X:
     pop     rax
     pop     rcx
     push    rax
-    push    rcx                 ; Zamieniamy kolejnością dwie wartości z wierzchu stosu.
+    push    rcx
     jmp     update_mode
 
+; Wrzucamy na wierzchołek stosu globalną liczbę Noteci.
 chr_N:
     mov     rax, N
-    push    rax                 ; Wrzucamy na wierzchołek stosu liczbę Noteci.
+    push    rax
     jmp     update_mode
 
+; Wrzucamy na wierzchołek stosu numer instancji danego Notecia.
 chr_n:
     mov     eax, r14D
-    push    rax                 ; Wrzucamy na wierzchołek stosu numer instancji danego Notecia.
+    push    rax
     jmp     calc_loop
 
-; Wywołanie funckji: int64_t debug(uint32_t n, uint64_t *stack_pointer)
+; Wywołujemy zewnętrzną funkcję:
+; int64_t debug(uint32_t n, uint64_t *stack_pointer).
 chr_g:
-    mov     r13, rsp
-    mov     edi, r14D       ; Jako pierwszy argument przekazujemy numer instancji Notecia.
-    lea     rsi, [rsp]            ; Jako drugi argument przekazujemy wskaźnik na wierzchołek stosu.
-    ; Musimy wyrównać wskażnik stosu tak, żeby był podzielny przez 16.
+    mov     r13, rsp            ; Zapamiętujemy pozycję wskaźnika stosu.
+    mov     edi, r14D           ; Pierwszy argument - numer instancji Notecia.
+    lea     rsi, [rsp]          ; Drugi argument - wskaźnik na wierzchołek stosu.
 
-    and     rsp, -16            ; Wyrównujemy stos.
-    call    debug               ; Wołamy funkcję debug.
+    and     rsp, -16            ; Wyrównujemy wskaźnik stosu przed wywołaniem
+                                ; funkcji debug, tak żeby był podzielny przez 16.
+    call    debug               ; Wywołujemy funkcję debug.
 
+; Przywracamy stos sprzed wywołania funkcji debug.
+; Przesuwamy wskaźnik na wierzchołek stosu o wartość wskazaną przez funkcję debug.
 update_stack:
     mov     rsp, r13            ; Przywracamy stare rsp.
     lea     rcx, [rax * 8]
     add     rsp, rcx            ; Aktualizujemy wskaźnik na wierzchołek stosu.
     jmp     update_mode
 
-; TODO: synchronizacja Noteci.
+; Synchronizacja Noteci.
 chr_W:
-    pop     rax                 ; Pobieramy numer instancji Notecia, z którym chcemy się zsynchronizować.
+    pop     rax                 ; Pobieramy numer instancji Notecia,
+                                ; z którym chcemy się zsynchronizować.
     pop     rcx                 ; Pobieramy wartość, którą chcemy wymienić.
 
-    mov     r10, rax            ; Na potrzeby synchronizacji przehowujemy numer instancji+1 Notecia, z którym chcemy się synchronizować.
-    inc     r10
+    mov     r10, rax            ; Na potrzeby synchronizacji przehowujemy numer+1
+    inc     r10                 ; instancji Notecia, z którym się synchronizujemy.
 
+; Schemat synchronizacji:
+;   -> każdy Noteć sprawdza czy jest pierwszym czy drugim z pary
+;      (sprawdzając odpowiednie wartości w globalnej tablicy wait_array,
+;       po wcześniejszym uzyskaniu globalnego semafora);
+;   -> Noteć, który jest pierwszy zapisuje w globalnej tablicy numer+1 instancji
+;      Notecia, z którym chce się zsynchronizować,
+;      następnie czeka na powiadomienie od tego drugiego, odbiera wartość "prezent",
+;      który drugi mu zostawił, zostawia swój prezent dla drugiego i daje mu
+;      o tym znać, pobiera kolejny znak;
+;   -> Noteć, który jest drugi zostawia prezent dla pierwszego, zwalnia pierwszego
+;      i czeka na komunikat od niego, kiedy otrzyma komunikat odbiera prezent dla
+;      siebie, zwalnia globalny semefor, który gwarantował, że tylko oni wymienią
+;      się między sobą prezentami, tj wartościami pod wierzchołkiem swoich stosów
+;   (numer+1 instancji, bo tablica w sekcji .bss jest zainicjalizowana zerami).
+
+; Ustalamy czy jesteśmy pierwsi, czy drudzy.
 check:
-    ; Wchodzimy do sekcji krytycznej
-    mov     rdx, table_lock
+    mov     rdx, global_lock
     mov     rsi, 1
 
 check_wait:
     xchg    [rdx], rsi
     test    rsi, rsi
-    jnz     check_wait
+    jnz     check_wait          ; Skaczemy, jeśli semafor jest zamknięty.
 
 check_action:
-    lea     r8, \
-    [rel wait_array]
-    lea     r9, [r8 + rax * 8]  ; Pobieramy adres komórki z tablicy odpowiadającą Noteciowi, z którym chcemy się zsynchronizować.
+    lea     r8, [rel wait_array]; Pobieramy adres komórki z tablicy odpowiadającej
+    lea     r9, [r8 + rax * 8]  ;  Noteciowi, z którym chcemy się zsynchronizować.
     cmp     r15, [r9]
     je      second              ; Jesteśmy drudzy.
 
-; Możliwy przeplot, gdzie obydwaj są "pierwszymi" !!!
-
+; Jesteśmy pierwsi.
 first:
-    lea     r8, \
-    [rel wait_array]
-    lea     r9, [r8 + r14 *8]   ; Pobieramy adres komórki z tablicy odpowiadającej instancji danego Notecia.
+    lea     r8, [rel wait_array]; Pobieramy adres komórki z tablicy odpowiadającej
+    lea     r9, [r8 + r14 *8]   ; instancji danego Notecia.
     mov     [r9], r10           ; Wrzucamy numer instancji+1 Notecia, na którego czekamy.
-    mov     [rdx], rsi          ; Otwieramy blokadę.
-
+    mov     [rdx], rsi          ; Zwalniamy semafor.
 
 first_wait:
     mov     rsi,  second_lock
     cmp     r15, [rsi]
-    jne     first_wait          ; Czekamy na drugie krzesło.
+    jne     first_wait          ; Czekamy na powiadomienie od drugiego Notecia.
 
 first_action:
-    mov     rsi, [rel second_chair] ; Pobieramy wartość od drugiego Notecia.
+    mov     rsi, \
+            [rel second_chair]  ; Odbieramy prezent od drugiego Notecia.
     push    rsi                 ; Wrzucamy na wierzchołek stosu otrzymaną wartość.
 
     mov     r8, 0               ; Nie chcemy się synchronizować.
-    mov     [rel second_lock], r8   ; Blokujemy krzesło.
+    mov     [rel second_lock], \
+            r8                  ; Blokujemy krzesło.
 
-    mov     qword [r9], 0
+    mov     qword [r9], 0       ; Resetujemy odpowiednie pole w globalnej tablicy.
+                                ; Nie musimy zdobywać semafora, bo już jesteśmy w SK.
 
-    mov     [rel first_chair], rcx  ; Przekazujemy naszą przesyłkę.
-    mov     [rel first_lock], r10   ; Zwalniamy drugiego Notecia, czekającego na przesyłkę.
+    mov     [rel first_chair], \
+            rcx                 ; Przekazujemy naszą przesyłkę.
+    mov     [rel first_lock], \
+            r10                 ; Zwalniamy drugiego Notecia, czekającego na przesyłkę.
 
     jmp     update_mode
 
+; Jesteśmy drudzy. I mamy już globalny semafor.
 second:
-    mov     [rdx], rsi        ; Otwieramy blokadę.
+    mov     [rel second_chair], \
+            rcx                 ; Przekazujemy nasz prezent.
+    mov     [rel second_lock], \
+            r10                 ; Zwalniamy pierwszego, czekającego na prezent.
 
-    mov     rdx, table_lock   ; Pobieramy adres semafora.
-    mov     r9, 1
-
-table_wait:
-    xchg    [rdx], r9           ; Zamykamy blokadę.
-    test    r9, r9              ; Sprawdzamy czy była otwarta.
-    jnz     table_wait          ; Kręcimy się, jeśli była zamknięta.
-
-table_action:
-    mov     [rel second_chair], rcx ; Przekazujemy naszą przesyłkę.
-    mov     [rel second_lock], r10  ; Zwalniamy pierwszego Notecia, czekającego na przesyłkę.
-
+; Czekamy na komunikat (zwolnione krzesło) od pierwszego Notecia.
 second_wait:
-    mov     rsi, first_lock
-    cmp     r15, [rsi]
+    mov     r9, first_lock
+    cmp     r15, [r9]
     jne     second_wait         ; Czekamy na pierwsze krzesło.
 
 second_action:
-    mov     rsi, [rel first_chair]  ; Pobieramy wartość od pierwszego Notecia.
-    push    rsi                 ; Wrzucamy na wierzchołek stosu otrzymaną wartość.
+    mov     r9, \
+            [rel first_chair]   ; Pobieramy wartość od pierwszego Notecia.
+    push    r9                  ; Wrzucamy na wierzchołek stosu otrzymaną wartość.
 
-    mov     rsi, first_lock
-    mov     qword [rsi], 0   ; Blokujemy krzesło.
+    mov     r9, first_lock
+    mov     qword [r9], 0       ; Blokujemy krzesło.
 
-    mov     [rdx], r9           ; Otwieramy blokadę.
+    mov     [rdx], rsi          ; Zwalniamy globalny semafor.
 
+; Wychodzimy z trybu wpisywania.
 update_mode:
-    xor     r12D, r12D          ; Wychodzimy z trybu wpisywania.
+    xor     r12D, r12D
     jmp     calc_loop
 
+; Przywracamy wartości wykorzystywanych rejestrów.
+; Zachowujemy zgodność z ABI.
 return:
     mov     rax, [rsp]          ; Zwracamy wartość z wierzchołka stosu.
     lea     rsp, [rbp - 5*8]    ; Przywracamy bazowy adres.
