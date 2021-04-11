@@ -13,7 +13,7 @@ volatile unsigned wait = 1;
 // Startujemy co najwyżej jedno obliczenie calc_1
 // i parzystą liczbę obliczeń calc_2.
 static const char calc_1[] = "6N8ZXab=12-+3*~FFF&cDe09|g";
-static const char calc_2[] = "nY1^W";
+static const char calc_2[] = "nY1^WnY1^W";
 static const uint64_t result_1 = (~((0xab - 0x12) * 3) & 0xfff) | 0xcde09;
 
 // Ta funkcja jest wywoływana tylko w obliczeniu calc_1

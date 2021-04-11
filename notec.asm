@@ -269,7 +269,7 @@ first_action:
     mov     [rel first_chair], rcx  ; Przekazujemy naszą przesyłkę.
     mov     [first_lock], rax   ; Zwalniamy drugiego Notecia, czekającego na przesyłkę.
 
-    jmp     calc_loop
+    jmp     update_mode
 
 second:
     mov     rdx, table_lock   ; Pobieramy adres semafora.
@@ -294,11 +294,9 @@ second_action:
     push    rsi                 ; Wrzucamy na wierzchołek stosu otrzymaną wartość.
 
     mov     rsi, N
-    mov     [first_lock], rsi     ; Blokujemy krzesło.
+    mov     [first_lock], rsi   ; Blokujemy krzesło.
 
     mov     [rdx], r9           ; Otwieramy blokadę.
-
-    jmp     calc_loop
 
 update_mode:
     xor     r12D, r12D          ; Wychodzimy z trybu wpisywania.
